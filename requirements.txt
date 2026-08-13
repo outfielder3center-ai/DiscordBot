@@ -1,6 +1,6 @@
 fastapi
 pydantic
-nacl
+PyNaCl
 google-genai
 pillow
 requests
