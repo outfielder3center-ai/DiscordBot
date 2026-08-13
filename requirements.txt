@@ -1,0 +1,7 @@
+fastapi
+pydantic
+nacl
+google-genai
+pillow
+requests
+python-dotenv
