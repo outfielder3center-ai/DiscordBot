@@ -167,45 +167,42 @@ def send_discord_channel_message(channel_id: str, content: str):
     requests.post(url, json={"content": content}, headers=headers)
 
 @app.get("/api/cron")
-@app.post("/api/cron")  # POSTリクエストも受け取れるように追加
+@app.post("/api/cron")
 async def handle_cron(request: Request, type: str = "morning"):
     """Vercel Cron から呼び出される定期実行エンドポイント"""
     users = get_all_users()
-    
-    # 万が一DBにユーザーがまだ居ない場合のフォールバック（テスト用）
-    if not users:
-        print("ユーザーが未登録のため、Cron処理をスキップしました")
-        return JSONResponse({"status": "no_users"})
+    today_str = date.today().isoformat()
 
-    for user in users:
-        user_id = user["user_id"]
-        last_advice = user["last_advice"]
-        last_review_date = user["last_review_date"]
+    if type == "morning":
+        # 8:00 課題出し（ユーザーの有無にかかわらず全体宛に送信）
+        ref_url = random.choice(SHINO_WORKS)
+        
+        # 登録ユーザーがいれば前回の復習メモを添える
+        last_advice_text = ""
+        if users and users[0].get("last_advice"):
+            last_advice_text = f"💡 **前回の指導のおさらい:**\n「{users[0]['last_advice']}」\n\n"
 
-        if type == "morning":
-            # 8:00 課題出し
-            ref_url = random.choice(SHINO_WORKS)
-            msg = f"🌅 **【万波先生の朝の熱血お題出し！】** <@{user_id}>\n"
-            msg += "おう！朝だぞ！今日のイラスト練習の準備はできているか！？\n\n"
-            if last_advice:
-                msg += f"💡 **前回の指導のおさらい:**\n「{last_advice}」\n\n"
-            msg += f"🎨 **本日の模写課題（千種みのり先生 / 早乙女志乃）：**\n{ref_url}\n"
-            msg += "この素晴らしい作例の『表情』や『線のメリハリ』を意識して描いてみろ！待ってるぞ！"
+        msg = f"🌅 **【万波先生の朝の熱血お題出し！】**\n"
+        msg += "おう！朝だぞ！今日のイラスト練習の準備はできているか！？\n\n"
+        msg += last_advice_text
+        msg += f"🎨 **本日の模写課題（千種みのり先生 / 早乙女志乃）：**\n{ref_url}\n"
+        msg += "この素晴らしい作例の『表情』や『線のメリハリ』を意識して描いてみろ！待ってるぞ！"
+        
+        send_discord_channel_message(DISCORD_CHANNEL_ID, msg)
+
+    elif type == "evening":
+        # 20:00 催促
+        # 本日添削を実行した人が誰もいない（またはデータがない）場合に送信
+        already_reviewed = any(u.get("last_review_date") == today_str for u in users)
+        
+        if not already_reviewed:
+            msg = f"🌙 **【万波先生の夜の確認だ！】**\n"
+            msg += "おいおい！今日の添削指導がまだ入ってねぇぞ！\n"
+            msg += "10分だけの雑描きでも構わねぇ！`/review` で今日の成果を見せてみろ！待ってるぞ！"
             
             send_discord_channel_message(DISCORD_CHANNEL_ID, msg)
 
-        elif type == "evening":
-            # 20:00 催促（今日まだ添削されてない場合のみ）
-            today_str = date.today().isoformat()
-            if last_review_date != today_str:
-                msg = f"🌙 **【万波先生の夜の確認だ！】** <@{user_id}>\n"
-                msg += "おいおい！今日の添削指導がまだ入ってねぇぞ！\n"
-                msg += "10分だけの雑描きでも構わねぇ！`/review` で今日の成果を見せてみろ！待ってるぞ！"
-                
-                send_discord_channel_message(DISCORD_CHANNEL_ID, msg)
-
     return JSONResponse({"status": "ok", "type": type})
-
 
 
 def verify_discord_request(request_body: bytes, signature: str, timestamp: str):
