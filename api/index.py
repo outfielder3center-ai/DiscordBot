@@ -465,7 +465,7 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
             return JSONResponse({
                 "type": 5,
                 "data": {
-                    "content": "🎨 おう！お疲れ様！**いま添削中だから** 少し待ってろよ！"
+                    "content": "おう！お疲れ様！**いま添削中だから** 少し待ってろよ！"
                 }
             })
 
