@@ -93,7 +93,7 @@ def add_xp_and_update_advice(user_id: str, added_xp: int, new_advice: str):
         "new_xp": new_xp,
         "new_level": new_level,
         "leveled_up": leveled_up,
-        "next_level_xp": math.ceil(math.sqrt(new_level)) * 100,  # 次のレベルまでの必要XP目安
+        "next_level_xp": math.ceil(math.sqrt(new_level)) * 100 - new_xp,  # 次のレベルまでの必要XP目安
     }
 
 def get_all_users():
