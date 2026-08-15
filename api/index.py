@@ -175,19 +175,16 @@ async def handle_cron(request: Request, type: str = "morning"):
     today_str = date.today().isoformat()
 
     if type == "morning":
-        # 8:00 課題出し（ユーザーの有無にかかわらず全体宛に送信）
         ref_url = random.choice(SHINO_WORKS)
         
-        # 登録ユーザーがいれば前回の復習メモを添える
-        last_advice_text = ""
-        if users and users[0].get("last_advice"):
-            last_advice_text = f"💡 **前回の指導のおさらい:**\n「{users[0]['last_advice']}」\n\n"
-
         msg = f"🌅 **【万波先生の朝の熱血お題出し！】**\n"
         msg += "おう！朝だぞ！今日のイラスト練習の準備はできているか！？\n\n"
-        msg += last_advice_text
+        
+        if users and users[0].get("last_advice"):
+            msg += f"💡 **前回の課題・改善ポイント:**\n{users[0]['last_advice']}\n\n"
+            
         msg += f"🎨 **本日の模写課題（千種みのり先生 / 早乙女志乃）：**\n{ref_url}\n"
-        msg += "この素晴らしい作例の『表情』や『線のメリハリ』を意識して描いてみろ！待ってるぞ！"
+        msg += "今日も上記の意識ポイントを念頭に置いて描いてみろ！待ってるぞ！"
         
         send_discord_channel_message(DISCORD_CHANNEL_ID, msg)
 
