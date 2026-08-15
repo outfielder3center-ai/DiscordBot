@@ -413,7 +413,7 @@ def _sync_process_review(token: str, app_id: str, user_id: str, image_url: str, 
         image_bytes = draw_precision_redpen_to_bytes(current_img, commands)
 
         # Discord Webhookへ送信
-        patch_url = f"[https://discord.com/api/v10/webhooks/](https://discord.com/api/v10/webhooks/){app_id}/{token}/messages/@original"
+        patch_url = f"https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original"
         payload = {"content": final_text}
         files = {
             "files[0]": ("tensaku_redpen.png", image_bytes, "image/png")
@@ -423,7 +423,7 @@ def _sync_process_review(token: str, app_id: str, user_id: str, image_url: str, 
 
     except Exception as e:
         final_response = f"おう…すまねぇ、処理中にエラーが起きちまった！（エラー: {e}）"
-        patch_url = f"[https://discord.com/api/v10/webhooks/](https://discord.com/api/v10/webhooks/){app_id}/{token}/messages/@original"
+        patch_url = f"https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original"
         requests.patch(patch_url, json={"content": final_response})
 
 
