@@ -1,6 +1,7 @@
+import math
 import os
-import psycopg2
 from datetime import date
+import psycopg2
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -51,25 +52,49 @@ def get_user(user_id: str):
     }
 
 def add_xp_and_update_advice(user_id: str, added_xp: int, new_advice: str):
-    """XP追加と前回の改善点の更新"""
+    """XP追加と動的レベル計算、および前回の改善点の更新"""
     user = get_user(user_id)
-    new_xp = user["xp"] + added_xp
-    new_level = (new_xp // 100) + 1
-    leveled_up = new_level > user["level"]
+    current_xp = user["xp"]
+    current_level = user["level"]
+
+    new_xp = current_xp + added_xp
+    temp_xp = new_xp  # レベルアップ判定用の残りXP
+    new_level = current_level
+
+    # 現在のレベルに必要なXPを算出し、蓄積XPが上回っている限りレベルアップを繰り返す
+    while True:
+        # ceil(現在のレベル ** 0.5) * 100
+        required_xp_for_next_level = math.ceil(math.sqrt(new_level)) * 100
+
+        if temp_xp >= required_xp_for_next_level:
+            temp_xp -= required_xp_for_next_level
+            new_level += 1
+        else:
+            break
+
+    leveled_up = new_level > current_level
     today_str = date.today().isoformat()
 
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(
+        """
         UPDATE users 
         SET xp = %s, level = %s, last_advice = %s, last_review_date = %s
         WHERE user_id = %s
-    """, (new_xp, new_level, new_advice, today_str, user_id))
+    """,
+        (new_xp, new_level, new_advice, today_str, user_id),
+    )
     conn.commit()
     cursor.close()
     conn.close()
 
-    return {"new_xp": new_xp, "new_level": new_level, "leveled_up": leveled_up}
+    return {
+        "new_xp": new_xp,
+        "new_level": new_level,
+        "leveled_up": leveled_up,
+        "next_level_xp": math.ceil(math.sqrt(new_level)) * 100,  # 次のレベルまでの必要XP目安
+    }
 
 def get_all_users():
     """全登録ユーザーの取得（Cron用）"""

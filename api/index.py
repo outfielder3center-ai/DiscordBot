@@ -1,37 +1,43 @@
 import io
+import json
 import os
 import random
+import re
 from datetime import date
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from google import genai
+from google.genai import types
 from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
-from PIL import Image
+from PIL import Image, ImageDraw
 import requests
 
-from db import get_user, add_xp_and_update_advice, get_all_users
+# DBモジュールから last_image 系の関数もインポートする想定
+from db import (
+    get_user,
+    add_xp_and_update_advice,
+    get_all_users,
+    get_user_last_image,      # ← 追加: 前回画像URL取得
+    update_user_last_image,   # ← 追加: 画像URL更新
+)
 
 app = FastAPI()
 
 PUBLIC_KEY = os.getenv("DISCORD_PUBLIC_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN")
-# リマインドを送るDiscordチャンネルのID（環境変数または直書き）
 DISCORD_CHANNEL_ID = os.getenv("DISCORD_CHANNEL_ID")
 
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-MANNAMI_PROMPT = """
-あなたはイラスト指導教官の「万波先生」です。
-見た目は少し強面ですが、生徒のイラスト上達を熱血サポートします。
+MODEL_PRIORITY_LIST = [
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash-lite",
+]
 
-【口調・設定】
-- 野球部の熱血コーチのような力強い口調（「〜だぞ」「〜じゃねぇか」「おう！」）。
-- 生徒の頑張りをしっかり認め、技術的アドバイスを熱く伝えること。
-"""
-
-# 千種みのり先生（早乙女志乃）の作例URL候補リスト
 RAW_SHINO_URLS = """
 https://www.pixiv.net/artworks/147425596
 https://www.pixiv.net/artworks/146887834
@@ -152,11 +158,74 @@ https://www.pixiv.net/artworks/94002091
 https://www.pixiv.net/artworks/93847847
 """
 
-# 改行で分割して、空行を除外したリストを作る
 SHINO_WORKS = [url.strip() for url in RAW_SHINO_URLS.strip().splitlines() if url.strip()]
 
+
+def generate_with_fallback(contents, config=None):
+    """優先リスト順にモデルを呼び出すフォールバック処理"""
+    last_exception = None
+    for model_name in MODEL_PRIORITY_LIST:
+        try:
+            print(f"🤖 モデル [{model_name}] を呼び出し中...")
+            response = ai_client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=config
+            )
+            print(f"✅ モデル [{model_name}] で成功しました！")
+            return response
+        except Exception as e:
+            print(f"⚠️ モデル [{model_name}] でエラーが発生: {e}")
+            last_exception = e
+    raise last_exception
+
+
+def draw_precision_redpen_to_bytes(img: Image.Image, commands: list) -> bytes:
+    """赤ペン描画（文字なし）"""
+    img_work = img.copy().convert("RGB")
+    draw = ImageDraw.Draw(img_work)
+    width, height = img_work.size
+
+    red_color = (255, 30, 30)
+    line_width = 3
+
+    for item in commands:
+        a_type = item.get("type")
+
+        def to_px(pts):
+            return [(int(pt[0] * width / 1000), int(pt[1] * height / 1000)) for pt in pts]
+
+        if a_type == "path" and "points" in item:
+            pixel_points = to_px(item["points"])
+            if len(pixel_points) >= 2:
+                draw.line(pixel_points, fill=red_color, width=line_width, joint="curve")
+
+        elif a_type == "line" and "points" in item:
+            pixel_points = to_px(item["points"])
+            if len(pixel_points) >= 2:
+                draw.line(pixel_points, fill=red_color, width=line_width)
+
+        elif a_type == "circle" and "box_2d" in item:
+            ymin, xmin, ymax, xmax = item["box_2d"]
+            left = int(xmin * width / 1000)
+            top = int(ymin * height / 1000)
+            right = int(xmax * width / 1000)
+            bottom = int(ymax * height / 1000)
+            draw.ellipse([left, top, right, bottom], outline=red_color, width=line_width)
+
+        elif a_type == "arrow" and "points" in item:
+            pixel_points = to_px(item["points"])
+            if len(pixel_points) >= 2:
+                draw.line(pixel_points, fill=red_color, width=line_width)
+                p2 = pixel_points[1]
+                draw.ellipse([p2[0]-5, p2[1]-5, p2[0]+5, p2[1]+5], fill=red_color)
+
+    output = io.BytesIO()
+    img_work.save(output, format="PNG", quality=95)
+    return output.getvalue()
+
+
 def send_discord_channel_message(channel_id: str, content: str):
-    """指定したDiscordチャンネルにBotからメッセージを送信"""
     if not channel_id or not DISCORD_BOT_TOKEN:
         return
     url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
@@ -170,34 +239,25 @@ def send_discord_channel_message(channel_id: str, content: str):
 @app.get("/api/cron")
 @app.post("/api/cron")
 async def handle_cron(request: Request, type: str = "morning"):
-    """Vercel Cron から呼び出される定期実行エンドポイント"""
     users = get_all_users()
     today_str = date.today().isoformat()
 
     if type == "morning":
         ref_url = random.choice(SHINO_WORKS)
-        
         msg = f"🌅 **【万波先生の朝の熱血お題出し！】**\n"
         msg += "おう！朝だぞ！今日のイラスト練習の準備はできているか！？\n\n"
-        
         if users and users[0].get("last_advice"):
             msg += f"💡 **前回の課題・改善ポイント:**\n{users[0]['last_advice']}\n\n"
-            
         msg += f"🎨 **本日の模写課題（千種みのり先生 / 早乙女志乃）：**\n{ref_url}\n"
         msg += "今日も上記の意識ポイントを念頭に置いて描いてみろ！待ってるぞ！"
-        
         send_discord_channel_message(DISCORD_CHANNEL_ID, msg)
 
     elif type == "evening":
-        # 20:00 催促
-        # 本日添削を実行した人が誰もいない（またはデータがない）場合に送信
         already_reviewed = any(u.get("last_review_date") == today_str for u in users)
-        
         if not already_reviewed:
             msg = f"🌙 **【万波先生の夜の確認だ！】**\n"
             msg += "おいおい！今日の添削指導がまだ入ってねぇぞ！\n"
             msg += "10分だけの雑描きでも構わねぇ！`/review` で今日の成果を見せてみろ！待ってるぞ！"
-            
             send_discord_channel_message(DISCORD_CHANNEL_ID, msg)
 
     return JSONResponse({"status": "ok", "type": type})
@@ -212,69 +272,154 @@ def verify_discord_request(request_body: bytes, signature: str, timestamp: str):
     except BadSignatureError:
         raise HTTPException(status_code=401, detail="Invalid request signature")
 
+
 def process_review_in_background(token: str, app_id: str, user_id: str, image_url: str, user_comment: str, is_fix: bool):
+    """
+    バックグラウンド処理：
+    is_fix == True の場合、前回画像と比較分析して修正努力を褒めつつ添削
+    """
     try:
-        # DBからユーザー状態を取得
         user_data = get_user(user_id)
-        last_advice = user_data["last_advice"]
-
-        img_resp = requests.get(image_url)
-        img = Image.open(io.BytesIO(img_resp.content))
-
-        # 修正版かどうかでプロンプトと獲得XPを変更
-        earned_xp = 100
-        prompt_context = f"ユーザーコメント: {user_comment if user_comment else '特になし'}\n"
+        last_advice = user_data.get("last_advice", "")
         
-        if is_fix and last_advice:
-            earned_xp = 200  # 修正ボーナス！
-            prompt_context += f"【重要】ユーザーは前回のあなたの指摘（前回の指摘内容:「{last_advice}」）を意識して描き直してくれました！前回の指摘が改善されているかを重点的に評価し、褒めてあげてください！"
+        # 今回送られてきた画像を読み込む
+        img_resp = requests.get(image_url)
+        current_img = Image.open(io.BytesIO(img_resp.content))
+        width, height = current_img.size
+
+        # Geminiに渡すコンテンツリストの初期化（今回画像をセット）
+        gemini_contents = [current_img]
+        
+        prompt_context = f"ユーザーコメント: {user_comment if user_comment else '特になし'}\n"
+
+        # ----------------------------------------------------
+        # ① & ② の分岐処理: is_fix 判定と画像取得
+        # ----------------------------------------------------
+        if is_fix:
+            # DBから前回の画像URLを取得
+            prev_image_url = get_user_last_image(user_id)
+            
+            if prev_image_url:
+                try:
+                    prev_resp = requests.get(prev_image_url)
+                    prev_img = Image.open(io.BytesIO(prev_resp.content))
+                    
+                    # Geminiに前回の画像を追加（1枚目が前回絵、2枚目が今回絵）
+                    gemini_contents = [prev_img, current_img]
+                    
+                    prompt_context += (
+                        "【ビフォーアフター比較モード】\n"
+                        "1枚目の画像が「修正前（前回）」、2枚目の画像が「修正後（今回）」の作品です！\n"
+                        f"前回のあなたのアドバイス（「{last_advice}」）を元に、生徒が描き直してくれました。\n"
+                        "前回の課題がどれくらい改善されたかを2枚の画像を見比べて重点的に確認し、"
+                        "描き直して挑戦した努力と上達したポイントを熱く褒めちぎってください！\n"
+                    )
+                except Exception as img_err:
+                    print(f"⚠️ 前回画像の読み込みに失敗しました: {img_err}")
+                    prompt_context += "（前回の修正版として提出されました！挑戦姿勢を褒めて指導してください）\n"
+            else:
+                prompt_context += "（前回の修正版として提出されました！挑戦姿勢を褒めて指導してください）\n"
         else:
-            prompt_context += "このイラストを熱血指導してください！"
+            prompt_context += "このイラストを熱血指導してください！\n"
 
-        # Gemini解析（メイン添削）
-        response = ai_client.models.generate_content(
-            model="gemini-3.5-flash",  # ※使用しているモデル名
-            contents=[img, MANNAMI_PROMPT, prompt_context]
+        system_instruction = """
+        あなたはイラスト指導教官の「万波先生」です。
+        見た目は少し強面ですが、野球部の熱血コーチのような力強い口調（「〜だぞ」「〜じゃねぇか」「おう！」）で生徒を指導します。
+        イラストを分析し、アドバイス文章と骨格修正用の赤ペン描画コマンドを必ず指定されたJSONフォーマットのみで出力してください。Markdownの枠（```json ... ```）は不要です。
+        """
+
+        prompt = f"""
+        【最新（今回）画像情報】
+        幅: {width}px, 高さ: {height}px
+        コンテキスト: {prompt_context}
+
+        【指示】
+        最新のイラスト（2枚ある場合は2枚目の修正後イラスト）を分析・添削し、以下のフォーマットのJSON形式のみで回答してください。
+
+        1. advice: 万波先生口調での熱血アドバイス文章（日本語）。
+        2. draw_commands: 最新イラストの上に引く赤ペン描画コマンド配列。
+           - type "path": 顎ラインや髪のシルエットに沿った【吸い付くような曲線】。points: [[x1, y1], [x2, y2], ...]
+           - type "line": 目の水平ラインや顔の正中線。points: [[x1, y1], [x2, y2]]
+           - type "circle": パーツの囲みや頭のアタリ。box_2d: [ymin, xmin, ymax, xmax]
+           - type "arrow": 修正方向の矢印。points: [[始点x, 始点y], [終点x, 終点y]]
+
+        【ルール】
+        - 単なる図形ではなく、最新イラストの【輪郭や骨格、パーツに沿って吸い付くような】アタリ線を引くこと。
+        - アドバイス（advice）と赤ペン描画（draw_commands）は内容を完全に一致させること。
+        - 座標は 0-1000 の正規化座標を使用。コメント文字列は含めないこと。
+
+        【返却JSONフォーマット】
+        {{
+          "advice": "おう！前回の指摘をしっかり直してきたな！特に顎のラインが格段に良くなったぞ！...",
+          "draw_commands": [
+            {{ "type": "path", "points": [[300, 700], [500, 800], [700, 700]] }}
+          ]
+        }}
+        """
+
+        gemini_contents.append(prompt)
+
+        # Gemini呼び出し
+        response = generate_with_fallback(
+            contents=gemini_contents,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction
+            )
         )
-        advice_text = response.text
 
-        # --- ここからGeminiによるアドバイス要約処理 ---
+        res_text = response.text.strip()
+        if res_text.startswith("```"):
+            res_text = res_text.split("\n", 1)[1].rsplit("\n", 1)[0].strip()
+
+        mannami_result = json.loads(res_text)
+        advice_text = mannami_result.get("advice", "添削完了だ！")
+        commands = mannami_result.get("draw_commands", [])
+
+        # アドバイス要約処理
         summary_prompt = f"""
         以下の添削文から、描いた人が次回意識すべき「具体的な改善点・アドバイス」だけを抽出してください。
-
-        【制約事項】
-        ・挨拶や褒め言葉は除外すること
-        ・2〜3項目の簡潔な箇条書きにすること
-        ・万波先生らしい語り口（〜だぞ！、〜を意識しろ！など）を少し維持すること
-        ・全体で100〜150文字程度に収めること
-
+        【制約】挨拶や褒め言葉は除外 / 2〜3項目の簡潔な箇条書き / 万波先生口調（〜だぞ！など）は維持せず簡潔に / 100〜150文字程度
         【添削文】
         {advice_text}
         """
-        summary_response = ai_client.models.generate_content(
-            model="gemini-3.5-flash",
-            contents=summary_prompt
-        )
+        summary_response = generate_with_fallback(contents=summary_prompt)
         short_advice = summary_response.text.strip()
-        # --- ここまで ---
 
-        # 要約された綺麗なアドバイスをSupabaseに保存！
+        # ----------------------------------------------------
+        # ③ XP判定（固定100XP）と DB更新
+        # ----------------------------------------------------
+        earned_xp = 100  # is_fixによる加点は廃止
         db_result = add_xp_and_update_advice(user_id, earned_xp, short_advice)
+        
+        # 今回の画像URLを「前回の画像」としてDBに保存（上書き更新）
+        update_user_last_image(user_id, image_url)
 
         # レスポンスメッセージ作成
-        xp_msg = f"\n\n--- \n🔥 **+{earned_xp} XP 獲得！** (現在の累計: {db_result['new_xp']} XP / Lv.{db_result['new_level']})"
+        xp_msg = f"\n\n--- \n🔥 **+{earned_xp} XP 獲得！** (累計: {db_result['new_xp']} XP / Lv.{db_result['new_level']} [次Lvまで: {db_result['next_level_xp']} XP])"
         if is_fix:
-            xp_msg = "\n✨ **【前回の修正ボーナス適用！】** ✨" + xp_msg
-        if db_result["leveled_up"]:
+            xp_msg = "\n✨ **【修正チャレンジ達成！】** ✨" + xp_msg
+        if db_result.get("leveled_up"):
             xp_msg += f"\n🎉 **LEVEL UP!!** Lv.{db_result['new_level']} に上がったぞ！その調子だ！"
 
-        final_response = advice_text + xp_msg
+        final_text = advice_text + xp_msg
+
+        # 赤ペン添削画像を最新イラストを元に生成
+        image_bytes = draw_precision_redpen_to_bytes(current_img, commands)
+
+        # Discord Webhookへ送信
+        patch_url = f"[https://discord.com/api/v10/webhooks/](https://discord.com/api/v10/webhooks/){app_id}/{token}/messages/@original"
+        payload = {"content": final_text}
+        files = {
+            "files[0]": ("tensaku_redpen.png", image_bytes, "image/png")
+        }
+        
+        requests.patch(patch_url, data={"payload_json": json.dumps(payload)}, files=files)
 
     except Exception as e:
         final_response = f"おう…すまねぇ、処理中にエラーが起きちまった！（エラー: {e}）"
+        patch_url = f"[https://discord.com/api/v10/webhooks/](https://discord.com/api/v10/webhooks/){app_id}/{token}/messages/@original"
+        requests.patch(patch_url, json={"content": final_response})
 
-    patch_url = f"https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original"
-    requests.patch(patch_url, json={"content": final_response})
 
 @app.post("/")
 async def interactions(request: Request, background_tasks: BackgroundTasks):
@@ -295,7 +440,6 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
         command_name = data["data"]["name"]
         interaction_token = data["token"]
         app_id = data["application_id"]
-        # 送信したユーザーのIDを取得
         user_id = data.get("member", {}).get("user", {}).get("id") or data.get("user", {}).get("id")
 
         if command_name == "review":
