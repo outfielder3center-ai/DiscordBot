@@ -3,6 +3,7 @@ import json
 import os
 import random
 import re
+import time
 from datetime import date
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
@@ -423,15 +424,17 @@ def process_review_in_background(token: str, app_id: str, user_id: str, image_ur
 
 @app.post("/")
 async def interactions(request: Request, background_tasks: BackgroundTasks):
+    t0 = time.time()
     signature = request.headers.get("X-Signature-Ed25519")
     timestamp = request.headers.get("X-Signature-Timestamp")
     body = await request.body()
 
     if not signature or not timestamp:
         raise HTTPException(status_code=401, detail="Missing signature headers")
-
     verify_discord_request(body, signature, timestamp)
+    print(f"⏱️ 署名検証完了: {time.time() - t0:.2f}s")
     data = await request.json()
+    print(f"⏱️ JSON解析完了: {time.time() - t0:.2f}s")
 
     # 1. Ping応答
     if data.get("type") == 1:
@@ -453,7 +456,7 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
             image_url = image_info.get("url")
             user_comment = options.get("comment", "")
             is_fix = options.get("is_fix", False)
-
+            print(f"⏱️ オプション取得完了: {time.time() - t0:.2f}s")
             # =========================================================
             # ★ ここが最重要ポイント！
             # Gemini呼び出しや画像処理、DB処理を行う重い関数は
@@ -468,10 +471,12 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
                 user_comment,
                 is_fix,
             )
-
+            print(f"⏱️ add_task完了: {time.time() - t0:.2f}s")
             # =========================================================
             # ★ 重い処理を一切待たずに、0.05秒で即座にDiscordへType 5を返す！
             # =========================================================
-            return JSONResponse({"type": 5})
+            s = JSONResponse({"type": 5})
+            print(f"⏱️ レスポンス返却直前: {time.time() - t0:.2f}s")
+            return s
 
     return JSONResponse({"type": 4, "data": {"content": "未対応のコマンドだぞ！"}})
