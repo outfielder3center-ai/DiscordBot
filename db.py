@@ -64,7 +64,7 @@ def add_xp_and_update_advice(user_id: str, added_xp: int, new_advice: str):
     # 現在のレベルに必要なXPを算出し、蓄積XPが上回っている限りレベルアップを繰り返す
     while True:
         # ceil(現在のレベル ** 0.5) * 100
-        required_xp_for_next_level = math.ceil(math.sqrt(new_level)) * 100
+        required_xp_for_next_level = math.ceil(math.sqrt(new_level) * 100)
 
         if temp_xp >= required_xp_for_next_level:
             temp_xp -= required_xp_for_next_level
@@ -88,12 +88,11 @@ def add_xp_and_update_advice(user_id: str, added_xp: int, new_advice: str):
     conn.commit()
     cursor.close()
     conn.close()
-
     return {
         "new_xp": new_xp,
         "new_level": new_level,
         "leveled_up": leveled_up,
-        "next_level_xp": math.ceil(math.sqrt(new_level)) * 100 - new_xp,  # 次のレベルまでの必要XP目安
+        "next_level_xp": required_xp_for_next_level - temp_xp,  # 次のレベルまでの必要XP目安
     }
 
 def get_all_users():

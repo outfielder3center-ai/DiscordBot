@@ -299,26 +299,18 @@ def _sync_process_review(token: str, app_id: str, user_id: str, image_url: str, 
         current_img = Image.open(io.BytesIO(img_resp.content))
         width, height = current_img.size
 
-        # Geminiに渡すコンテンツリストの初期化（今回画像をセット）
+        # Geminiに渡すコンテンツリストの初期化
         gemini_contents = [current_img]
         
         prompt_context = f"ユーザーコメント: {user_comment if user_comment else '特になし'}\n"
 
-        # ----------------------------------------------------
-        # ① & ② の分岐処理: is_fix 判定と画像取得
-        # ----------------------------------------------------
         if is_fix:
-            # DBから前回の画像URLを取得
             prev_image_url = get_user_last_image(user_id)
-            
             if prev_image_url:
                 try:
                     prev_resp = requests.get(prev_image_url)
                     prev_img = Image.open(io.BytesIO(prev_resp.content))
-                    
-                    # Geminiに前回の画像を追加（1枚目が前回絵、2枚目が今回絵）
                     gemini_contents = [prev_img, current_img]
-                    
                     prompt_context += (
                         "【ビフォーアフター比較モード】\n"
                         "1枚目の画像が「修正前（前回）」、2枚目の画像が「修正後（今回）」の作品です！\n"
@@ -340,31 +332,34 @@ def _sync_process_review(token: str, app_id: str, user_id: str, image_url: str, 
         イラストを分析し、アドバイス文章と骨格修正用の赤ペン描画コマンドを必ず指定されたJSONフォーマットのみで出力してください。Markdownの枠（```json ... ```）は不要です。
         """
 
+        # ★ 描画精度を高めるためにプロンプトを厳格に指定
         prompt = f"""
         【最新（今回）画像情報】
         幅: {width}px, 高さ: {height}px
         コンテキスト: {prompt_context}
 
         【指示】
-        最新のイラスト（2枚ある場合は2枚目の修正後イラスト）を分析・添削し、以下のフォーマットのJSON形式のみで回答してください。
+        イラスト内の「顔・人物」を正確に検出し、添削してください。
 
         1. advice: 万波先生口調での熱血アドバイス文章（日本語）。
-        2. draw_commands: 最新イラストの上に引く赤ペン描画コマンド配列。
-           - type "path": 顎ラインや髪のシルエットに沿った【吸い付くような曲線】。points: [[x1, y1], [x2, y2], ...]
-           - type "line": 目の水平ラインや顔の正中線。points: [[x1, y1], [x2, y2]]
-           - type "circle": パーツの囲みや頭のアタリ。box_2d: [ymin, xmin, ymax, xmax]
-           - type "arrow": 修正方向の矢印。points: [[始点x, 始点y], [終点x, 終点y]]
+        2. draw_commands: イラストの上に精密に引く赤ペン描画コマンド配列。
 
-        【ルール】
-        - 単なる図形ではなく、最新イラストの【輪郭や骨格、パーツに沿って吸い付くような】アタリ線を引くこと。
-        - アドバイス（advice）と赤ペン描画（draw_commands）は内容を完全に一致させること。
-        - 座標は 0-1000 の正規化座標を使用。コメント文字列は含めないこと。
+        【描画コマンドの厳密ルール】
+        - 座標系: 0〜1000 の正規化座標（[0,0]が左上、[1000,1000]が右下）。
+        - 必ず「キャラクターのパーツそのもの」に重なるように描画すること。背景や画像の端まで飛び出す大きな線を描いてはいけません。
+        - 以下の具体線のみを出力してください：
+          a) `line`: 顔の縦の正中線（額〜生え際〜鼻筋〜唇〜顎先をまっすぐ通る1本の直線）
+          b) `line`: 目の水平ガードライン（左目頭〜右目尻を平行に通る1本の直線）
+          c) `path` または `circle`: 両目の位置を正しく囲む円、または顎〜頭頂部の実際の輪郭に沿った曲線
+          d) `arrow`: 修正すべき方向（例：顎を引き締める方向、髪のボリュームを増やす方向）を示す矢印
 
         【返却JSONフォーマット】
         {{
-          "advice": "おう！前回の指摘をしっかり直してきたな！特に顎のラインが格段に良くなったぞ！...",
+          "advice": "おう！熱い想いが伝わってくるぞ！だが顔の軸と目の水平ラインが少しずれてるな！...",
           "draw_commands": [
-            {{ "type": "path", "points": [[300, 700], [500, 800], [700, 700]] }}
+            {{ "type": "line", "points": [[500, 200], [500, 700]] }},
+            {{ "type": "line", "points": [[350, 450], [650, 450]] }},
+            {{ "type": "circle", "box_2d": [420, 360, 480, 440] }}
           ]
         }}
         """
@@ -400,10 +395,9 @@ def _sync_process_review(token: str, app_id: str, user_id: str, image_url: str, 
         # ----------------------------------------------------
         # ③ XP判定（固定100XP）と DB更新
         # ----------------------------------------------------
-        earned_xp = 100  # is_fixによる加点は廃止
+        earned_xp = 100
         db_result = add_xp_and_update_advice(user_id, earned_xp, short_advice)
         
-        # 今回の画像URLを「前回の画像」としてDBに保存（上書き更新）
         update_user_last_image(user_id, image_url)
 
         # レスポンスメッセージ作成
@@ -419,7 +413,7 @@ def _sync_process_review(token: str, app_id: str, user_id: str, image_url: str, 
         image_bytes = draw_precision_redpen_to_bytes(current_img, commands)
 
         # Discord Webhookへ送信
-        patch_url = f"https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original"
+        patch_url = f"[https://discord.com/api/v10/webhooks/](https://discord.com/api/v10/webhooks/){app_id}/{token}/messages/@original"
         payload = {"content": final_text}
         files = {
             "files[0]": ("tensaku_redpen.png", image_bytes, "image/png")
@@ -429,7 +423,7 @@ def _sync_process_review(token: str, app_id: str, user_id: str, image_url: str, 
 
     except Exception as e:
         final_response = f"おう…すまねぇ、処理中にエラーが起きちまった！（エラー: {e}）"
-        patch_url = f"https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original"
+        patch_url = f"[https://discord.com/api/v10/webhooks/](https://discord.com/api/v10/webhooks/){app_id}/{token}/messages/@original"
         requests.patch(patch_url, json={"content": final_response})
 
 
