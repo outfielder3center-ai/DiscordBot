@@ -106,3 +106,22 @@ def get_all_users():
     cursor.close()
     conn.close()
     return [{"user_id": r[0], "last_advice": r[1], "last_review_date": r[2]} for r in rows]
+
+def get_user_last_image(user_id: str) -> str:
+    """指定されたユーザーの 'last_image_url' を取得する"""
+    user = get_user(user_id)
+    return user.get("last_image_url", "")
+
+def update_user_last_image(user_id: str, image_url: str):
+    """指定されたユーザーの 'last_image_url' を更新する"""
+    init_db()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        UPDATE users 
+        SET last_image_url = %s
+        WHERE user_id = %s
+    """, (image_url, user_id))
+    conn.commit()
+    cursor.close()
+    conn.close()
