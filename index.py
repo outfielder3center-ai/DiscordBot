@@ -433,9 +433,11 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
     verify_discord_request(body, signature, timestamp)
     data = await request.json()
 
+    # 1. PINGへの応答
     if data.get("type") == 1:
         return JSONResponse({"type": 1})
 
+    # 2. コマンドへの応答
     if data.get("type") == 2:
         command_name = data["data"]["name"]
         interaction_token = data["token"]
@@ -452,8 +454,11 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
             user_comment = options.get("comment", "")
             is_fix = options.get("is_fix", False)
 
+            # ---------------------------------------------------------
+            # ★ 重要: 重い処理（Gemini呼び出し等）はすべて BackgroundTasks に任せる
+            # ---------------------------------------------------------
             background_tasks.add_task(
-                process_review_in_background,
+                process_review_in_background, # ← ここでGeminiや描画を実行する関数を呼ぶ
                 interaction_token,
                 app_id,
                 user_id,
@@ -462,11 +467,9 @@ async def interactions(request: Request, background_tasks: BackgroundTasks):
                 is_fix,
             )
 
-            return JSONResponse({
-                "type": 5,
-                "data": {
-                    "content": "おう！お疲れ様！**いま添削中だから** 少し待ってろよ！"
-                }
-            })
+            # ---------------------------------------------------------
+            # ★ 重要: Geminiの処理を待たずに、0.1秒で即座にType 5を返す！
+            # ---------------------------------------------------------
+            return JSONResponse({"type": 5})
 
     return JSONResponse({"type": 4, "data": {"content": "未対応のコマンドだぞ！"}})
