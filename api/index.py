@@ -233,7 +233,7 @@ def process_review_in_background(token: str, app_id: str, user_id: str, image_ur
 
         # Gemini解析（メイン添削）
         response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",  # ※使用しているモデル名
+            model="gemini-3.5-flash",  # ※使用しているモデル名
             contents=[img, MANNAMI_PROMPT, prompt_context]
         )
         advice_text = response.text
