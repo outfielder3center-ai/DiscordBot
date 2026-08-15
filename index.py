@@ -13,6 +13,7 @@ from nacl.exceptions import BadSignatureError
 from nacl.signing import VerifyKey
 from PIL import Image, ImageDraw
 import requests
+import asyncio
 
 # DBモジュールから last_image 系の関数もインポートする想定
 from db import (
@@ -274,7 +275,17 @@ def verify_discord_request(request_body: bytes, signature: str, timestamp: str):
         raise HTTPException(status_code=401, detail="Invalid request signature")
 
 
-def process_review_in_background(token: str, app_id: str, user_id: str, image_url: str, user_comment: str, is_fix: bool):
+async def process_review_in_background(interaction_token, app_id, user_id, image_url, user_comment, is_fix):
+    try:
+        # 重い処理（Gemini呼び出し等）を asyncio.to_thread で別スレッドに追い出す
+        await asyncio.to_thread(
+            _sync_process_review, # 重い処理をまとめた関数
+            interaction_token, app_id, user_id, image_url, user_comment, is_fix
+        )
+    except Exception as e:
+        print(f"Background task error: {e}")
+
+def _sync_process_review(token: str, app_id: str, user_id: str, image_url: str, user_comment: str, is_fix: bool):
     """
     バックグラウンド処理：
     is_fix == True の場合、前回画像と比較分析して修正努力を褒めつつ添削
@@ -408,7 +419,7 @@ def process_review_in_background(token: str, app_id: str, user_id: str, image_ur
         image_bytes = draw_precision_redpen_to_bytes(current_img, commands)
 
         # Discord Webhookへ送信
-        patch_url = f"[https://discord.com/api/v10/webhooks/](https://discord.com/api/v10/webhooks/){app_id}/{token}/messages/@original"
+        patch_url = f"https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original"
         payload = {"content": final_text}
         files = {
             "files[0]": ("tensaku_redpen.png", image_bytes, "image/png")
@@ -418,7 +429,7 @@ def process_review_in_background(token: str, app_id: str, user_id: str, image_ur
 
     except Exception as e:
         final_response = f"おう…すまねぇ、処理中にエラーが起きちまった！（エラー: {e}）"
-        patch_url = f"[https://discord.com/api/v10/webhooks/](https://discord.com/api/v10/webhooks/){app_id}/{token}/messages/@original"
+        patch_url = f"https://discord.com/api/v10/webhooks/{app_id}/{token}/messages/@original"
         requests.patch(patch_url, json={"content": final_response})
 
 
