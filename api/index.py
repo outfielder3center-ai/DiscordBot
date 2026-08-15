@@ -167,10 +167,15 @@ def send_discord_channel_message(channel_id: str, content: str):
     requests.post(url, json={"content": content}, headers=headers)
 
 @app.get("/api/cron")
-async def handle_cron(type: str = "morning"):
+@app.post("/api/cron")  # POSTリクエストも受け取れるように追加
+async def handle_cron(request: Request, type: str = "morning"):
     """Vercel Cron から呼び出される定期実行エンドポイント"""
     users = get_all_users()
-    today_str = date.today().isoformat()
+    
+    # 万が一DBにユーザーがまだ居ない場合のフォールバック（テスト用）
+    if not users:
+        print("ユーザーが未登録のため、Cron処理をスキップしました")
+        return JSONResponse({"status": "no_users"})
 
     for user in users:
         user_id = user["user_id"]
@@ -191,6 +196,7 @@ async def handle_cron(type: str = "morning"):
 
         elif type == "evening":
             # 20:00 催促（今日まだ添削されてない場合のみ）
+            today_str = date.today().isoformat()
             if last_review_date != today_str:
                 msg = f"🌙 **【万波先生の夜の確認だ！】** <@{user_id}>\n"
                 msg += "おいおい！今日の添削指導がまだ入ってねぇぞ！\n"
@@ -199,6 +205,8 @@ async def handle_cron(type: str = "morning"):
                 send_discord_channel_message(DISCORD_CHANNEL_ID, msg)
 
     return JSONResponse({"status": "ok", "type": type})
+
+
 
 def verify_discord_request(request_body: bytes, signature: str, timestamp: str):
     if not PUBLIC_KEY:
