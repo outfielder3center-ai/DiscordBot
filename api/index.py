@@ -166,6 +166,7 @@ def send_discord_channel_message(channel_id: str, content: str):
     }
     requests.post(url, json={"content": content}, headers=headers)
 
+
 @app.get("/api/cron")
 @app.post("/api/cron")
 async def handle_cron(request: Request, type: str = "morning"):
@@ -233,16 +234,34 @@ def process_review_in_background(token: str, app_id: str, user_id: str, image_ur
         else:
             prompt_context += "このイラストを熱血指導してください！"
 
-        # Gemini解析
+        # Gemini解析（メイン添削）
         response = ai_client.models.generate_content(
-            model="gemini-3.5-flash",
+            model="gemini-2.5-flash",  # ※使用しているモデル名
             contents=[img, MANNAMI_PROMPT, prompt_context]
         )
         advice_text = response.text
 
-        # 要約したアドバイス（次回比較用）とXP更新
-        # 今回のアドバイスから最初の200文字程度を記憶しておく
-        short_advice = advice_text[:200].replace("\n", " ")
+        # --- ここからGeminiによるアドバイス要約処理 ---
+        summary_prompt = f"""
+        以下の添削文から、描いた人が次回意識すべき「具体的な改善点・アドバイス」だけを抽出してください。
+
+        【制約事項】
+        ・挨拶や褒め言葉は除外すること
+        ・2〜3項目の簡潔な箇条書きにすること
+        ・万波先生らしい語り口（〜だぞ！、〜を意識しろ！など）を少し維持すること
+        ・全体で100〜150文字程度に収めること
+
+        【添削文】
+        {advice_text}
+        """
+        summary_response = ai_client.models.generate_content(
+            model="gemini-3.5-flash",
+            contents=summary_prompt
+        )
+        short_advice = summary_response.text.strip()
+        # --- ここまで ---
+
+        # 要約された綺麗なアドバイスをSupabaseに保存！
         db_result = add_xp_and_update_advice(user_id, earned_xp, short_advice)
 
         # レスポンスメッセージ作成
